@@ -148,7 +148,7 @@ def does_user_have_fido_credential(userID, access_token):
     fido_credentials_endpoint = (
         "https://graph.microsoft.com/beta/users/"
         + userID
-        + "/authentication/fido2Methods"
+        + "/authentication/fido2Methods?slice=test"
     )
     print(f"\tCalling: GET {fido_credentials_endpoint}")
     hasFido = False
@@ -214,7 +214,7 @@ def get_fido2_creation_options(userID, access_token):
     fido_credentials_endpoint = (
         "https://graph.microsoft.com/beta/users/"
         + userID
-        + "/authentication/fido2Methods/creationOptions"
+        + "/authentication/fido2Methods/creationOptions?slice=test"
     )
 
     response = requests.get(

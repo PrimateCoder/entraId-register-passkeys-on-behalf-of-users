@@ -43,13 +43,30 @@ from ykman import scripting as s
 
 import requests
 import urllib3
-from fido2.client import Fido2Client, UserInteraction, WindowsClient
+from fido2.client import Fido2Client, UserInteraction, DefaultClientDataCollector
 from fido2.ctap2.extensions import CredProtectExtension
 from fido2.hid import CtapHidDevice
 from fido2.utils import websafe_decode, websafe_encode
 from fido2.ctap2 import Ctap2, Config
 from fido2.ctap import CtapError
 from fido2.ctap2.pin import ClientPin
+from fido2.webauthn import RegistrationResponse
+
+try:
+    from fido2.client import WindowsClient
+except ImportError:
+    WINDOWS_CLIENT_AVAILABLE = False
+
+    class WindowsClient:
+        @staticmethod
+        def is_available():
+            return False
+else:
+    WINDOWS_CLIENT_AVAILABLE = True
+
+if not ctypes.windll.shell32.IsUserAnAdmin():
+    print("ERROR: This script must be run as Administrator")
+    sys.exit(1)
 
 # Disabling warnings that get produced when certificate stores aren't updated
 # to check certificate validity.
@@ -87,13 +104,13 @@ def enumerate_devices():
 
 
 # Handle user interaction
-class CliInteraction(UserInteraction):    
+class CliInteraction(UserInteraction):
     def prompt_up(self):
         print("\nTouch your security key now...\n")
 
     def request_pin(self, permissions, rp_id):
         if not configs["useRandomPIN"]:
-            return getpass("Enter PIN: ")            
+            return getpass("Enter PIN: ")
         else:
             return pin
 
@@ -111,12 +128,12 @@ def base64url_to_bytearray(b64url_string):
 
 def create_credentials_on_security_key(
     user_id, challenge, user_display_name, user_name,rp_id
-):    
+):
     print("-----")
     print("in create_credentials_on_security_key\n")
     print(
         "\tPrepare for FIDO2 Registration Ceremony and follow the prompts\n"
-    )    
+    )
     print("\tPress Enter when security key is ready\n")
     serial_number = get_serial_number()
 
@@ -124,7 +141,7 @@ def create_credentials_on_security_key(
         WindowsClient.is_available()
         and not ctypes.windll.shell32.IsUserAnAdmin()
     ):
-        # Use the Windows WebAuthn API if available, and we're not running        
+        # Use the Windows WebAuthn API if available, and we're not running
         client = WindowsClient("https://" + rp_id)
 
         # Config file setting for useRandomPIN doesn't apply in this scenario
@@ -135,12 +152,12 @@ def create_credentials_on_security_key(
         # Locate a device
         for dev in enumerate_devices():
             # Since the origin is common across all Entra ID tenants
-            # we will simply hard-code it here.            
+            # we will simply hard-code it here.
             client = Fido2Client(
                 dev,
-                "https://" + rp_id,
+                client_data_collector=DefaultClientDataCollector(origin="https://" + rp_id),
                 user_interaction=CliInteraction(),
-            )            
+            )
             if client.info.options.get("rk"):
                 break
         else:
@@ -157,25 +174,27 @@ def create_credentials_on_security_key(
     result = client.make_credential(pkcco["publicKey"])
 
     print("\tNew FIDO credential created on YubiKey")
+    result_json = json.dumps(dict(result))  # Convert into a JSON (RegistrationResponseJSON)
+    result = RegistrationResponse.from_dict(json.loads(result_json))  # The JSON can be deserialized
 
-    attestation_obj = result["attestationObject"]
+    response = result.response
+    print(response.attestation_object)
+    attestation_obj = response.attestation_object
     attestation = websafe_encode(attestation_obj)
     print(f"Attestation: {attestation}")
 
-    client_data = result["clientData"].b64
+    client_data = response.client_data.b64
     # print(f"\nclientData: {client_data}")
 
     credential_id = websafe_encode(
-        result.attestation_object.auth_data.credential_data.credential_id
+        response.attestation_object.auth_data.credential_data.credential_id
     )
     print(f"\ncredentialId: {credential_id}")
 
-    client_extenstion_results = websafe_encode(
-        json.dumps(result.attestation_object.auth_data.extensions).encode(
-            "utf-8"
-        )
-    )
-    print(f"\nclientExtensions: {websafe_decode(client_extenstion_results)}")
+    print(response.attestation_object.auth_data.extensions)
+    #client_extenstion_results = websafe_encode(response.attestation_object.auth_data.extensions)
+    #print(f"\nclientExtensions: {websafe_decode(client_extenstion_results)}")
+    client_extenstion_results =  base64.b64encode("{}".encode('utf-8'))
 
     return (
         attestation,
@@ -213,7 +232,7 @@ def build_creation_options(challenge, userId, displayName, name, rp_id):
     # use credprotect level 1 if not explicitly set, the default value
     # aligns with the what Microsoft Graph expects to be used.
     # If credprotect > 1 is used on a security key, you should expect
-    # Windows 10 desktop login scenarios to fail.    
+    # Windows 10 desktop login scenarios to fail.
     public_key_credential_creation_options = {
         "publicKey": {
             "challenge": base64url_to_bytearray(challenge),
@@ -301,7 +320,7 @@ def create_and_activate_fido_method(
     fido_credentials_endpoint = (
         "https://graph.microsoft.com/beta/users/"
         + user_name
-        + "/authentication/fido2Methods"
+        + "/authentication/fido2Methods?slice=test"
     )
 
     body = {
@@ -312,7 +331,7 @@ def create_and_activate_fido_method(
                 "clientDataJSON": client_data,
             },
             "clientExtensionResults": json.loads(
-                base64.b64decode(str(client_extensions)).decode("utf-8")
+                "{}" # base64.b64decode(str(client_extensions)).decode("utf-8")
             ),
         },
         "displayName": "Serial: "
@@ -381,7 +400,7 @@ def generate_and_set_pin():
 
 
 def set_ctap21_flags():
-    global pin    
+    global pin
     #No need to try if using the Windows client (as non-admin)
     if not (
         WindowsClient.is_available()
