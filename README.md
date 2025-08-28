@@ -31,3 +31,5 @@ Microsoft Graph APIs allow for customers to develop solutions that allow for FID
 
 ## Sample code
 - [Bulk registration sample code](bulkRegistration/BulkRegistration.md)
+
+*test commit: random changes*
